@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                QScrollArea, QSlider)
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QCloseEvent, QPixmap, QPainter
-from src.config import load_config, save_config
+from config import load_config, save_config
 
 
 class PathSelector(QtWidgets.QWidget):
