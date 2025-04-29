@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from view import CompressorView, PathSelector
 from worker import CompressionWorker
-from config import load_ffmpeg_path, save_ffmpeg_path, get_base_path
+from config import load_config, save_config, get_base_path
 
 class CompressionController(QObject):
 
@@ -33,7 +33,9 @@ class CompressionController(QObject):
         self.view.closing.connect(self.handle_window_close)
 
     def _load_initial_ffmpeg_path(self):
-        loaded_path = load_ffmpeg_path()
+        config = load_config()
+        loaded_path = config.get('ffmpeg_path')
+        
         if not loaded_path:
             base = get_base_path()
             potential_paths = []
@@ -47,7 +49,7 @@ class CompressionController(QObject):
                 if os.path.isfile(path):
                     loaded_path = path
                     self.view.log_message(f"FFmpeg encontrado automaticamente: {loaded_path}", "INFO")
-                    save_ffmpeg_path(loaded_path)
+                    save_config({'ffmpeg_path': loaded_path})
                     break
 
         if loaded_path and os.path.isfile(loaded_path):
@@ -77,7 +79,7 @@ class CompressionController(QObject):
         if is_valid_ffmpeg:
             self.ffmpeg_path = selected_path
             self.view.set_ffmpeg_path(self.ffmpeg_path)
-            save_ffmpeg_path(self.ffmpeg_path)
+            save_config({'ffmpeg_path': self.ffmpeg_path})
             self.view.log_message(f"FFmpeg definido para: {self.ffmpeg_path}", "INFO")
         elif selected_path:
              self.view.show_error_message("Seleção Inválida", f"Arquivo selecionado não parece ser um executável FFmpeg válido:\n{selected_path}")
@@ -190,8 +192,16 @@ class CompressionController(QObject):
                   self.view.show_error_message("Erro de Saída", f"Não foi possível criar o diretório de saída:\n{output_dir}\n{e}")
                   return
 
+        # Get all compression parameters from view
         selected_quality = self.view.get_selected_quality()
-        self.view.log_message(f"Perfil de qualidade selecionado: {selected_quality}", "INFO")
+        codec = self.view.get_selected_codec()
+        resolution = self.view.get_selected_resolution()
+        custom_res = self.view.get_custom_resolution() if resolution == "Personalizado..." else None
+        crf = self.view.get_crf_value() if self.view.advanced_toggle.isChecked() else None
+
+        self.view.log_message(f"Configurações: Qualidade={selected_quality}, Codec={codec}, Resolução={resolution}", "INFO")
+        if crf:
+            self.view.log_message(f"Parâmetros avançados: CRF={crf}", "INFO")
 
         self.view.clear_log()
         self.view.reset_progress()
@@ -202,7 +212,11 @@ class CompressionController(QObject):
             self.ffmpeg_path,
             self.input_file,
             self.output_file,
-            quality_preset=selected_quality
+            quality_preset=selected_quality,
+            codec=codec,
+            resolution=resolution,
+            custom_res=custom_res,
+            crf=crf
         )
         self.compression_worker.moveToThread(self.compression_thread)
 
@@ -260,12 +274,11 @@ class CompressionController(QObject):
             self.view.log_message(final_msg, "INFO")
             self.view.log_message("-------------------------------------", "INFO")
 
+            # Update size comparison chart
+            self.view.size_chart.update_sizes(original_mb, final_mb)
+
         elif return_code == -1:
-             try:
-                 self.view.show_warning_message("Cancelado", "A operação de compressão foi cancelada.")
-             except AttributeError:
-                 self.view.log_message("Operação cancelada pelo usuário.", "WARN")
-                 QMessageBox.warning(self.view, "Cancelado", "A operação de compressão foi cancelada.")
+             self.view.show_warning_message("Cancelado", "A operação de compressão foi cancelada.")
              self.view.log_message("Operação cancelada pelo usuário.", "WARN")
         else:
              self.view.log_message(f"Compressão falhou. Verifique os logs acima.", "ERROR")
@@ -275,28 +288,6 @@ class CompressionController(QObject):
         self.compression_thread = None
         self.compression_worker = None
         self.view.log_message("Referências internas da thread limpas.", "INFO")
-
-    def _ask_open_output_directory(self, output_file):
-         try:
-             output_dir = os.path.dirname(output_file)
-             pass
-         except Exception as e:
-            self.view.log_message(f"Erro ao perguntar sobre abrir diretório: {e}", "WARN")
-
-    def _open_output_directory(self, directory):
-         if not os.path.isdir(directory):
-              self.view.log_message(f"Diretório não encontrado: {directory}", "WARN")
-              return
-         try:
-             if sys.platform == 'win32':
-                 os.startfile(directory)
-             elif sys.platform == 'darwin':
-                 subprocess.Popen(['open', directory])
-             else:
-                 subprocess.Popen(['xdg-open', directory])
-             self.view.log_message(f"Tentando abrir diretório: {directory}", "INFO")
-         except Exception as e:
-             self.view.log_message(f"Não foi possível abrir a pasta automaticamente: {e}", "ERROR")
 
     @Slot()
     def handle_window_close(self):
