@@ -13,12 +13,19 @@ class CompressionWorker(QObject):
 
     INFO = "INFO"; WARN = "AVISO"; ERROR = "ERRO"; CMD = "CMD"; FFMPEG = "FFMPEG"
 
-    def __init__(self, ffmpeg_path, input_file, output_file, quality_preset="Agressiva (Menor Arquivo)", parent=None):
+    def __init__(self, ffmpeg_path, input_file, output_file, 
+                 quality_preset="Agressiva (Menor Arquivo)",
+                 codec="H.264 (AVC)", resolution="Original",
+                 custom_res=None, crf=None, parent=None):
         super().__init__(parent)
         self.ffmpeg_path = ffmpeg_path
         self.input_file = input_file
         self.output_file = output_file
         self.quality_preset = quality_preset
+        self.codec = codec
+        self.resolution = resolution
+        self.custom_res = custom_res
+        self.crf = crf
         self._is_running = True
         self.process = None
 
@@ -67,12 +74,14 @@ class CompressionWorker(QObject):
                 self.error_occurred.emit("Erro Crítico de Configuração", msg)
                 self.finished.emit(1, self.output_file, 0, 0)
                 return
+            
             if not os.path.isfile(self.input_file):
                 msg = f"Arquivo de entrada não encontrado: {self.input_file}"
                 self.status_message.emit(msg, self.ERROR)
                 self.error_occurred.emit("Erro de Entrada", msg)
                 self.finished.emit(1, self.output_file, 0, 0)
                 return
+            
             try:
                 file_size_bytes = os.path.getsize(self.input_file)
                 original_file_size_mb = file_size_bytes / (1024 * 1024)
@@ -86,60 +95,90 @@ class CompressionWorker(QObject):
                  self.finished.emit(1, self.output_file, original_file_size_mb, 0)
                  return
 
-            self.status_message.emit(f"Aplicando perfil de qualidade: {self.quality_preset}", self.INFO)
-            if "Alta" in self.quality_preset:
-                target_crf = '20'
-                target_preset = 'veryfast'
-                skip_frames = 0
-                target_audio_bitrate = '160k'
-                target_bitrate_kbps = 5000
-            elif "Média" in self.quality_preset:
-                target_crf = '24'
-                target_preset = 'medium'
-                skip_frames = 1
-                target_audio_bitrate = '128k'
-                target_bitrate_kbps = 2500
+            # Configurações baseadas no codec selecionado
+            codec_map = {
+                "H.264 (AVC)": "libx264",
+                "H.265 (HEVC)": "libx265",
+                "VP9": "libvpx-vp9"
+            }
+            target_codec = codec_map.get(self.codec, "libx264")
+
+            # Configurações de qualidade
+            if self.crf is not None:
+                target_crf = str(self.crf)
             else:
-                target_crf = '28'
-                target_preset = 'medium'
-                skip_frames = 2
-                target_audio_bitrate = '128k'
-                target_bitrate_kbps = 1500
+                target_crf = {
+                    "Alta (Melhor Qualidade)": "20",
+                    "Média (Balanceado)": "24",
+                    "Agressiva (Menor Arquivo)": "28"
+                }.get(self.quality_preset, "23")
+
+            target_preset = {
+                "Alta (Melhor Qualidade)": "medium",
+                "Média (Balanceado)": "fast",
+                "Agressiva (Menor Arquivo)": "veryfast"
+            }.get(self.quality_preset, "fast")
+
+            skip_frames = {
+                "Alta (Melhor Qualidade)": 0,
+                "Média (Balanceado)": 1,
+                "Agressiva (Menor Arquivo)": 2
+            }.get(self.quality_preset, 1)
+
+            target_audio_bitrate = {
+                "Alta (Melhor Qualidade)": "160k",
+                "Média (Balanceado)": "128k",
+                "Agressiva (Menor Arquivo)": "96k"
+            }.get(self.quality_preset, "128k")
 
             output_fps = max(1.0, fps / (skip_frames + 1))
 
-            if duration_seconds > 0 and original_file_size_mb > 0:
-                 try:
-                     original_bitrate_kbps = (os.path.getsize(self.input_file) * 8 / 1000) / duration_seconds
-                     self.status_message.emit(f"Bitrate original estimado: {original_bitrate_kbps:.0f} kbps", self.INFO)
-                 except Exception:
-                      self.status_message.emit(f"Usando bitrate alvo de fallback do perfil: {target_bitrate_kbps} kbps", self.WARN)
-            else:
-                self.status_message.emit(f"Não foi possível calcular bitrate original. Usando fallback do perfil: {target_bitrate_kbps} kbps", self.WARN)
+            # Configuração de resolução
+            scale_filter = ""
+            if self.resolution != "Original":
+                if self.resolution == "Personalizado..." and self.custom_res:
+                    scale_filter = f"scale={self.custom_res[0]}:{self.custom_res[1]}:flags=lanczos"
+                else:
+                    resolutions = {
+                        "1080p (Full HD)": "scale=-2:1080",
+                        "720p (HD)": "scale=-2:720",
+                        "480p (SD)": "scale=-2:480"
+                    }
+                    scale_filter = resolutions.get(self.resolution, "")
 
-            target_bitrate_str = f"{target_bitrate_kbps}k"
-
-            self.status_message.emit(f"Dimensões: {width}x{height} | FPS Original: {fps:.1f} -> Saída: {output_fps:.1f}", self.INFO)
-            self.status_message.emit(f"Parâmetros -> CRF: {target_crf}, Preset: {target_preset}, FPS Saída: {output_fps:.1f}, Bitrate Vídeo: {target_bitrate_str}, Bitrate Áudio: {target_audio_bitrate}", self.INFO)
-
+            # Montar comando FFmpeg
             compress_command = [
                 self.ffmpeg_path, '-y',
                 '-i', self.input_file,
-                '-map_metadata', '0',
-                '-c:v', 'libx264',
+                '-c:v', target_codec,
                 '-crf', target_crf,
                 '-preset', target_preset,
-                '-b:v', target_bitrate_str,
-                '-maxrate', f"{int(target_bitrate_kbps * 1.5)}k",
-                '-bufsize', f"{int(target_bitrate_kbps * 3)}k",
-                '-vf', f'fps={output_fps}',
-                '-c:a', 'aac',
-                '-b:a', target_audio_bitrate,
-                '-movflags', '+faststart',
-                self.output_file
+                '-movflags', '+faststart'
             ]
 
+            # Adicionar filtros
+            if scale_filter:
+                compress_command.extend(['-vf', f"{scale_filter},fps={output_fps}"])
+            else:
+                compress_command.extend(['-vf', f"fps={output_fps}"])
+
+            # Configurações específicas por codec
+            if target_codec == "libx265":
+                compress_command.extend(['-x265-params', 'log-level=error'])
+            elif target_codec == "libvpx-vp9":
+                compress_command.extend(['-quality', 'good', '-cpu-used', '4'])
+
+            # Adicionar áudio e saída
+            compress_command.extend([
+                '-c:a', 'aac',
+                '-b:a', target_audio_bitrate,
+                self.output_file
+            ])
+
+            self.status_message.emit(f"Configurações: Codec={target_codec}, CRF={target_crf}, Preset={target_preset}", self.INFO)
+            self.status_message.emit(f"Resolução: {self.resolution}, FPS Saída: {output_fps:.1f}", self.INFO)
             self.status_message.emit("Iniciando compressão FFmpeg...", self.INFO)
+
             cmd_str = ' '.join(f'"{c}"' if ' ' in c else c for c in compress_command)
             self.status_message.emit(f"Comando: {cmd_str}", self.CMD)
 
@@ -150,6 +189,7 @@ class CompressionWorker(QObject):
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = subprocess.SW_HIDE
                 creationflags = subprocess.CREATE_NO_WINDOW
+
             try:
                 self.process = subprocess.Popen(
                     compress_command,
@@ -257,7 +297,6 @@ class CompressionWorker(QObject):
                  self.finished.emit(-1, self.output_file, original_file_size_mb, final_file_size_mb)
             else:
                  self.finished.emit(return_code, self.output_file, original_file_size_mb, final_file_size_mb)
-
 
     def _get_video_info(self):
         self.status_message.emit("Obtendo informações do vídeo...", self.INFO)
