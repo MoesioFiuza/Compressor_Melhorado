@@ -42,8 +42,7 @@ def test_save_and_load_config(tmp_path):
 
 def test_save_config_with_invalid_path(tmp_path, capsys):
     """Testa tratamento de erro ao salvar em caminho inválido"""
-    # monkeypatch open para lançar erro:
-    # Abra patch do builtins.open para disparar PermissionError
+
     dummypath = tmp_path / "nao_existe"
     with patch("builtins.open", side_effect=PermissionError("Sem permissão")):
         save_config({'foo': 'bar'}, base_path=dummypath)
@@ -82,7 +81,6 @@ def test_load_config_custom_fields(tmp_path):
 def test_save_config_overwrites(tmp_path):
     """Testa se sobrescreve arquivo existente corretamente"""
     config_file = tmp_path / CONFIG_FILE
-    # Write something "old"
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump({'ffmpeg_path': 'antigo'}, f)
     test_config = {
