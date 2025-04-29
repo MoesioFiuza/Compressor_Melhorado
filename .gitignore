@@ -12,3 +12,5 @@ Thumbs.db
 
 # Ignorar o arquivo compactado do ffmpeg
 ffmpeg.zip
+
+ffmpeg.exe
